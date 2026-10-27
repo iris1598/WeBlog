@@ -1,0 +1,25 @@
+# ============================================================
+#  换行符与二进制规则
+#  仓库同时被 Windows / macOS / Linux 使用，这里显式指定，
+#  避免 CRLF 让 CI 里的 ./gradlew 出现 "bad interpreter"。
+# ============================================================
+
+# 必须保持 LF，否则 Linux CI 无法执行
+*.sh      text eol=lf
+gradlew   text eol=lf
+
+# Windows 批处理保持 CRLF
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+
+# 二进制：禁止任何换行符转换
+*.so      binary
+*.jar     binary
+*.jks     binary
+*.keystore binary
+*.xz      binary
+*.png     binary
+*.jpg     binary
+*.ttf     binary
+*.apk     binary
+*.aab     binary
