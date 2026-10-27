@@ -10,21 +10,22 @@ public abstract class BlogCmd {
 
 
     public static String checkEnvironment() {
-        boolean cmd;
-        String res ;
-        cmd = cmdExer.execute("hugo version", false) == 0;
-        if (cmd) {
-            res = cmdExer.result;
-        } else {
-            res = "Hugo:  Not found \n";
-        }
-        cmd = cmdExer.execute("\nhexo version", false) == 0;
-        if (cmd) {
-            res += cmdExer.result;
-        } else {
-            res += "Hexo:  Not found \n";
-        }
-        return res;
+        StringBuilder res = new StringBuilder();
+        res.append("Node : ").append(version("node -v")).append('\n');
+        res.append("Npm  : ").append(version("npm -v")).append('\n');
+        res.append("Hugo : ").append(version("hugo version")).append('\n');
+        res.append("Hexo : ").append(version("hexo version")).append('\n');
+        res.append("Git  : ").append(version("git --version")).append('\n');
+        res.append('\n').append(Init.describeEnvironment());
+        return res.toString();
+    }
+
+    private static String version(String cmd) {
+        if (cmdExer.execute(cmd, false) != 0) return "Not found";
+        String out = cmdExer.result == null ? "" : cmdExer.result.trim();
+        if (out.isEmpty()) return "OK";
+        int end = out.indexOf('\n');
+        return end > 0 ? out.substring(0, end) : out;
     }
 
     public static void setProjectPath(String path) {

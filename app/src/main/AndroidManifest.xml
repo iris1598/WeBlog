@@ -2,38 +2,48 @@
 <manifest xmlns:tools="http://schemas.android.com/tools"
     xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.INTERNET" /> <!-- 存储权限 -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
-        tools:ignore="ScopedStorage" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!--
+        Android 13（API 33）起 READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE 已经失效，
+        这里用 maxSdkVersion 限制，避免在 13+ 上申请到无效权限。
+        Android 11+ 统一使用 MANAGE_EXTERNAL_STORAGE（所有文件访问权限），13/14/15 依然有效。
+    -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
     <application
         android:name=".global.application"
         android:allowBackup="true"
         android:icon="@drawable/weblog"
-        android:extractNativeLibs="true"
         android:label="@string/app_name"
         android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
-
         android:usesCleartextTraffic="true">
+
         <activity
             android:name=".activity.SettingsActivity"
-            android:theme="@style/AppTheme"
             android:exported="false"
+            android:label="@string/title_activity_settings"
             android:launchMode="singleTask"
-            android:label="@string/title_activity_settings" />
+            android:theme="@style/AppTheme" />
 
         <service
             android:name=".project.MainService"
             android:enabled="true"
-            android:exported="true" />
+            android:exported="false" />
 
         <activity
             android:name=".activity.MainActivity"
@@ -49,6 +59,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
         <activity
             android:name=".activity.HomeActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize"

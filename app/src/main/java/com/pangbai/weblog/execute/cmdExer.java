@@ -3,8 +3,7 @@ package com.pangbai.weblog.execute;
 
 import static com.pangbai.weblog.tool.util.getByEnv;
 
-import android.os.Build;
-import android.system.Os;
+
 import android.util.Log;
 
 import com.pangbai.weblog.tool.Init;
@@ -14,12 +13,22 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.List;
-import java.util.Map;
 
 public class cmdExer {
     public static Process process;
     public static String result;
     static String cwd = Init.sdcardPath, lastLine;
+
+    /**
+     * 启动 shell 的方式，-1 表示还没确定：
+     * 1 = /system/bin/linker64 + files 目录下的 busybox（Android 10+ 一直沿用的方案）
+     * 0 = 直接执行 nativeLibraryDir/libbusybox.so（apk_data_file 带 execute 权限，可直连）
+     * 2 = 直接执行 files 目录下的 busybox（Android 10 以下）
+     */
+    private static int shellMode = -1;
+
+    /** 候选顺序：优先沿用原有方案，失败再逐级降级 */
+    private static final int[] SHELL_MODE_ORDER = {1, 0, 2};
 
     public static int executeScripts(List<String> name, String path, boolean wait) {
         String cmd = "";
@@ -48,26 +57,54 @@ public class cmdExer {
             shell = "sh";
 
         ProcessBuilder processBuilder = new ProcessBuilder();
-       // Map<String, String> environment = processBuilder.environment();
-        if (cwd != null)
-            processBuilder.directory(new File(cwd));
+        // Map<String, String> environment = processBuilder.environment();
+        if (cwd != null) {
+            File dir = new File(cwd);
+            // 首次安装时可能还没拿到存储权限，chdir 到 /storage/emulated/0 会失败，
+            // 这时退回私有目录，避免整条命令直接抛 IOException。
+            if (!dir.isDirectory()) {
+                Log.w("exer", "工作目录不可用: " + cwd + "，改用 " + Init.filesDirPath);
+                dir = new File(Init.filesDirPath);
+            }
+            if (dir.isDirectory()) processBuilder.directory(dir);
+        }
         for (String env : Init.envp) {
             String[] tmp = getByEnv(env);
             processBuilder.environment().put(tmp[0], tmp[1]);
         }
 
-        // 设置环境变量
-        // environment.put("LD_LIBRARY_PATH", Init.filesDirPath + "/usr/lib");
-      if (Init.android10) {
-          processBuilder.command(Init.linker, Init.busyboxPath, shell, "-c", command);
-      }else {
-          processBuilder.command(Init.busyboxPath,shell, "-c", command);
-      }
-       processBuilder.redirectErrorStream(true);
+        processBuilder.redirectErrorStream(true);
+
+        process = null;
+        IOException lastError = null;
+        for (int i = 0; i < SHELL_MODE_ORDER.length; i++) {
+            int mode = SHELL_MODE_ORDER[i];
+            // 已经确定过可用方式，就直接用，不再逐级尝试
+            if (shellMode >= 0 && mode != shellMode) continue;
+            String[] cmd = buildCommand(mode, shell, command);
+            if (cmd == null) continue;
+            processBuilder.command(cmd);
+            try {
+                process = processBuilder.start();
+                if (shellMode != mode) {
+                    Log.i("exer", "shell 启动方式确定为 mode=" + mode + " (" + cmd[0] + ")");
+                    shellMode = mode;
+                }
+                break;
+            } catch (IOException e) {
+                lastError = e;
+                if (shellMode == mode) shellMode = -1; // 缓存的方式失效，重新探测
+                Log.w("exer", "shell 启动失败 mode=" + mode + " (" + cmd[0] + "): " + e.getMessage());
+            }
+        }
+
+        if (process == null) {
+            result += lastError == null ? "no available shell" : lastError.getMessage();
+            Log.e("exer", "无法启动 shell: " + result);
+            return -1;
+        }
 
         try {
-
-             process = processBuilder.start();
             if (!wait)
                 return 0;
             reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
@@ -95,6 +132,22 @@ public class cmdExer {
             if (process != null && wait) {
                 process.destroy();
             }
+        }
+    }
+
+    private static String[] buildCommand(int mode, String shell, String command) {
+        switch (mode) {
+            case 0:
+                // Android 10+：files 目录里的 ELF 已经没有 execute 权限，
+                // 而 nativeLibraryDir 下的 lib*.so 仍带 x_file_perms，可以直接 execve。
+                if (Init.busyboxNativePath == null || !new File(Init.busyboxNativePath).isFile())
+                    return null;
+                return new String[]{Init.busyboxNativePath, shell, "-c", command};
+            case 1:
+                if (!Init.android10) return null;
+                return new String[]{Init.linker, Init.busyboxPath, shell, "-c", command};
+            default:
+                return new String[]{Init.busyboxPath, shell, "-c", command};
         }
     }
 
