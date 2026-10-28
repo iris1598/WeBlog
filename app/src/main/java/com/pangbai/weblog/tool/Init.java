@@ -63,6 +63,12 @@ public class Init {
     public static String nodeNativePath;
     /** nativeLibraryDir/libbusybox.so：busybox 的副本，用来启动 shell */
     public static String busyboxNativePath;
+    /** nativeLibraryDir 里的 git 主程序（对应 usr/libexec/git-core/git） */
+    public static String gitNativePath;
+    /** nativeLibraryDir 里的 git-remote-http，https 协议的 clone / push 靠它 */
+    public static String gitRemoteHttpNativePath;
+    /** nativeLibraryDir 里的 ssh，git 走 ssh 协议时要用 */
+    public static String sshNativePath;
 
     final public static boolean android10 = Build.VERSION.SDK_INT >= 29;
     boolean result;
@@ -90,6 +96,9 @@ public class Init {
         nativeLibDir = ct.getApplicationInfo().nativeLibraryDir;
         nodeNativePath = nativeLibDir + "/libnode.so";
         busyboxNativePath = nativeLibDir + "/libbusybox.so";
+        gitNativePath = nativeLibDir + "/libgit.so";
+        gitRemoteHttpNativePath = nativeLibDir + "/libgit-remote-http.so";
+        sshNativePath = nativeLibDir + "/libssh.so";
 
         String[] envp = {
                 //"PATH=" + "/system/bin"
@@ -102,6 +111,15 @@ public class Init {
                 // node 被软链到 nativeLibraryDir 后 execPath 不再是 $PREFIX/bin/node，
                 // 显式给出全局模块目录，保证 npm/hexo 的全局包仍然找得到
                 "NODE_PATH=" + Init.filesDirPath + "/usr/lib/node_modules",
+                // git 被搬到 nativeLibraryDir 后，自身位置不再是 $PREFIX/bin/git，
+                // 必须显式告诉它 helper（git-remote-https 等）和模板在哪
+                "GIT_EXEC_PATH=" + Init.filesDirPath + "/usr/libexec/git-core",
+                "GIT_TEMPLATE_DIR=" + Init.filesDirPath + "/usr/share/git-core/templates",
+                // node 26 默认使用「系统 CA store」，而 termux 编译的 OpenSSL 把
+                // CA 路径写死在 termux 的前缀下，我们环境里那条路径不存在，
+                // 导致所有 HTTPS 请求报 UNABLE_TO_GET_ISSUER_CERT_LOCALLY。
+                // env 里自带 CA bundle，指过去即可。
+                "SSL_CERT_FILE=" + Init.filesDirPath + "/usr/etc/tls/cert.pem",
                 "PS1=\\[\\e[1\\;31m\\])➜ \\[\\e[1;36m\\]\\W\\[\\e[m\\] ",
                 "TERM=xterm-256color",
                 "LANG=en_US.UTF-8",
@@ -122,10 +140,10 @@ public class Init {
             ThreadUtil.thread(() -> {
                         try {
                             result = installEnv(ct);
-                            // 解压完成后，把 node 换成 nativeLibraryDir 里的可执行文件。
-                            // 这一步失败不影响环境本身，只是 node/npm/hexo 不可用。
-                            if (result && !installNodeExecutable()) {
-                                Log.w(TAG, "node 自动修复失败，node / npm / hexo 可能不可用");
+                            // 解压完成后，把 node / git / ssh 换成 nativeLibraryDir 里的
+                            // 可执行文件。这一步失败不影响环境本身，只是对应命令不可用。
+                            if (result && !installExecutables()) {
+                                Log.w(TAG, "部分可执行文件修复失败，node / git 可能不可用");
                             }
                         } catch (IOException | InterruptedException e) {
                             Log.e("InstallEnv  Failed", e.getMessage());
@@ -158,13 +176,18 @@ public class Init {
                     }
             );
 
-        } else if (!isNodeLinked() && !new File(nodeDir).exists()) {
-            // 非首次启动：只在 node 完全缺失时补一次
-            // （版本升级会走上面的 reinstall 分支，那里已经重建了 node）
-            ThreadUtil.thread(() -> {
-                Log.w(TAG, "node 缺失，尝试修复");
-                installNodeExecutable();
-            });
+        } else {
+            // 非首次启动：软链指向不对（悬空/指向旧目录）就修一次
+            // （版本升级会走上面的 reinstall 分支，那里已经全部重建）
+            boolean needNode = !isNodeLinked();
+            boolean needGit = !isLinked(binDir + "/git", gitNativePath);
+            if (needNode || needGit) {
+                ThreadUtil.thread(() -> {
+                    Log.w(TAG, "可执行文件软链需要修复 node=" + needNode + " git=" + needGit);
+                    if (needNode) installNodeExecutable();
+                    if (needGit) installGitExecutable();
+                });
+            }
         }
 
     }
@@ -205,7 +228,6 @@ public class Init {
         }
         inputStream.close();
         outputStream.close();
-        //  int exit = cmdExer.process.waitFor();
         return cmdExer.process.waitFor() == 0;
 
 
@@ -246,6 +268,69 @@ public class Init {
 
         Log.e(TAG, "node 仍然不可执行，node / npm / hexo 将无法工作，请查看上面的日志");
         return false;
+    }
+
+    /** node + git + ssh 一次性安装 */
+    public static boolean installExecutables() {
+        boolean nodeOk = installNodeExecutable();
+        boolean gitOk = installGitExecutable();
+        return nodeOk && gitOk;
+    }
+
+    /**
+     * 把 git / ssh 也软链到 nativeLibraryDir。
+     * <p>
+     * 原因和 node 一样：libexec.so 在 exec ELF 时会把 LD_PRELOAD 从 envp 里剥掉，
+     * 所以「node 里再 spawn git」（hexo deploy / npm 生命周期脚本）时钩子已经不在，
+     * 只能靠「目标文件本身在 apk_data_file 上」这条路。
+     * <p>
+     * 关键点是把 {@code usr/libexec/git-core/git} 也一起指过去 —— git-core 里
+     * git-add / git-commit 等 141 个虚线命令都是指向它的软链，指过去之后它们
+     * 全部解析到 nativeLibraryDir，git 内部 spawn helper 也不需要钩子了。
+     */
+    public static boolean installGitExecutable() {
+        String usr = filesDirPath + "/usr";
+        boolean ok = true;
+        // git 主程序
+        ok &= linkExecutable(usr + "/bin/git", gitNativePath);
+        ok &= linkExecutable(usr + "/libexec/git-core/git", gitNativePath);
+        // https 协议的 clone / push 需要 git-remote-https（原本是 git-remote-http 的软链）
+        ok &= linkExecutable(usr + "/libexec/git-core/git-remote-http", gitRemoteHttpNativePath);
+        ok &= linkExecutable(usr + "/libexec/git-core/git-remote-https", gitRemoteHttpNativePath);
+        // ssh 协议的 push / pull
+        ok &= linkExecutable(usr + "/bin/ssh", sshNativePath);
+
+        int code = cmdExer.execute("git --version", false);
+        String out = cmdExer.result == null ? "" : cmdExer.result.trim();
+        Log.i(TAG, "git --version => exit=" + code + " output=" + out);
+        return ok && code == 0;
+    }
+
+    /** 把 linkPath 换成指向 targetPath 的软链接（幂等） */
+    static boolean linkExecutable(String linkPath, String targetPath) {
+        if (targetPath == null || !new File(targetPath).isFile()) {
+            Log.w(TAG, "nativeLibraryDir 缺少 " + targetPath + "，跳过 " + linkPath);
+            return false;
+        }
+        if (isLinked(linkPath, targetPath)) return true;
+        try {
+            File link = new File(linkPath);
+            if (!deleteNode(link)) return false;
+            Os.symlink(targetPath, linkPath);
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "创建软链接失败 " + linkPath + " -> " + targetPath + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** linkPath 是否已经是指向 targetPath 的软链接 */
+    static boolean isLinked(String linkPath, String targetPath) {
+        try {
+            return targetPath != null && Os.readlink(linkPath).equals(targetPath);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     static boolean linkNode(File node, File nativeNode) {
@@ -303,10 +388,15 @@ public class Init {
 
     /** node 是否已经指向 nativeLibraryDir/libnode.so */
     public static boolean isNodeLinked() {
+        return isLinked(nodeDir, nodeNativePath);
+    }
+
+    /** 读取软链接目标，失败返回 null（给日志用） */
+    static String readLinkOrNull(String path) {
         try {
-            return Os.readlink(nodeDir).equals(nodeNativePath);
+            return Os.readlink(path);
         } catch (Exception e) {
-            return false;
+            return null;
         }
     }
 
@@ -336,6 +426,11 @@ public class Init {
         sb.append("libnode.so=").append(nodeNativePath).append(" exists=").append(nativeNode.exists())
                 .append(" canExec=").append(nativeNode.canExecute()).append('\n');
         sb.append("libbusybox.so=").append(busyboxNativePath).append(" exists=").append(new File(busyboxNativePath == null ? "" : busyboxNativePath).exists()).append('\n');
+        sb.append("git=").append(binDir).append("/git -> ").append(readLinkOrNull(binDir + "/git"))
+                .append(" (期望 ").append(gitNativePath).append(")\n");
+        sb.append("git-core/git -> ").append(readLinkOrNull(filesDirPath + "/usr/libexec/git-core/git")).append('\n');
+        sb.append("git-remote-https -> ").append(readLinkOrNull(filesDirPath + "/usr/libexec/git-core/git-remote-https")).append('\n');
+        sb.append("ssh=").append(readLinkOrNull(binDir + "/ssh")).append('\n');
         sb.append("busybox=").append(busyboxPath).append(" canExec=").append(busybox.canExecute());
         return sb.toString();
     }

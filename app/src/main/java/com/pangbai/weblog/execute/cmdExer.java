@@ -31,14 +31,19 @@ public class cmdExer {
     private static final int[] SHELL_MODE_ORDER = {1, 0, 2};
 
     public static int executeScripts(List<String> name, String path, boolean wait) {
-        String cmd = "";
-        path += "/";
+        // 这里用 source（.）而不是 `sh script`：
+        // `sh script` 会再 fork+exec 一层 shell，而 libexec.so 在 exec ELF 时会把
+        // LD_PRELOAD 从 envp 里剥掉，导致新 shell 没有 execve 钩子，脚本里调用
+        // git / hugo 这类 $PREFIX 下的二进制时就会 "Permission denied"。
+        // 用 source 让脚本直接跑在当前（带钩子的）shell 里，链路不会断。
+        StringBuilder cmd = new StringBuilder();
+        String dir = path.endsWith("/") ? path : path + "/";
         int size = name.size();
         for (int i = 0; i < size; i++) {
-            cmd += "sh " + path + name.get(i);
-            if (i != size - 1) cmd += " && ";
+            cmd.append(". \"").append(dir).append(name.get(i)).append("\"");
+            if (i != size - 1) cmd.append(" && ");
         }
-        return execute(cmd, false, wait);
+        return execute(cmd.toString(), false, wait);
     }
 
 

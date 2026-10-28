@@ -23,7 +23,13 @@ android {
             // 所以 node / busybox 以 lib*.so 的形式放在 jniLibs 里，
             // 必须解压到 nativeLibraryDir 并且不能被 strip。
             useLegacyPackaging true
-            keepDebugSymbols.addAll(['**/libnode.so', '**/libbusybox.so'])
+            keepDebugSymbols.addAll([
+                    '**/libnode.so',
+                    '**/libbusybox.so',
+                    '**/libgit.so',
+                    '**/libgit-remote-http.so',
+                    '**/libssh.so'
+            ])
         }
     }
     defaultConfig {
