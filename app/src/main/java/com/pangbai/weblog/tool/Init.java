@@ -188,6 +188,7 @@ public class Init {
                     if (needGit) installGitExecutable();
                 });
             }
+            installGitConfig(); // 幂等：缺失才写，保证 .gitconfig 一直在
         }
 
     }
@@ -274,7 +275,29 @@ public class Init {
     public static boolean installExecutables() {
         boolean nodeOk = installNodeExecutable();
         boolean gitOk = installGitExecutable();
+        installGitConfig();
         return nodeOk && gitOk;
+    }
+
+    /**
+     * 写 $HOME/.gitconfig，把所有目录标记为 git 的 safe.directory。
+     * <p>
+     * 站点目录建在 /storage/emulated/0（sdcard，FUSE 挂载）时，目录属主不是应用 uid，
+     * git 2.35.2+ 会报 "detected dubious ownership" 拒绝工作。HOME 指向应用私有目录，
+     * 这里的 --global 配置实际写到 files/.gitconfig，用通配符一次性覆盖所有项目路径。
+     */
+    public static void installGitConfig() {
+        File cfg = new File(filesDirPath, ".gitconfig");
+        if (cfg.isFile()) return; // 已存在就不动（幂等，且允许用户自己改）
+        try (java.io.FileWriter w = new java.io.FileWriter(cfg)) {
+            w.write("[safe]\n" +
+                    "\tdirectory = *\n" +
+                    "[init]\n" +
+                    "\tdefaultBranch = main\n");
+            Log.i(TAG, "已写入 " + cfg.getAbsolutePath());
+        } catch (Exception e) {
+            Log.w(TAG, "写入 .gitconfig 失败: " + e.getMessage());
+        }
     }
 
     /**
